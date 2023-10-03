@@ -11,9 +11,9 @@ DTYPES_DICT = {
         'subcontig' : 'category',
         'start' : 'int32',
         'end' : 'int32',
-        'read_depth' : 'float16',
+        'n_reads' : 'float16',
         'num_entropy_positions' : 'uint16',
-        '_read_depth' : 'uint16',
+        '_n_reads' : 'uint16',
         '_n_forward' : 'uint16',
         'entropy' : 'float64',
         'gc_percent' : 'float16',
@@ -28,7 +28,7 @@ def _incomplete_beta_binom(x, n, alpha, beta, p):
 def _strand_skew_test(n_reads, n_forward, strand_bias_tol = 0.1):
     
     n_forward = int(n_forward); n_reads = int(n_reads)
-    
+
     # p is the proportion of reads on the forward strand, which should be around 0.5
     # H0: p in [0.5 - tol, 0.5 + tol]
     # H1: p in H0^c
@@ -82,20 +82,20 @@ def load_regions_df(filename, contigs,
 
         # store some raw data for debugging
         features['_n_forward'] = n_forward
-        features['_read_depth'] = n_reads
+        features['_n_reads'] = n_reads
 
         # check to see if this region contains a highly skewed strand bias,
         # if so, the basecalls and coverage are unreliable
         # exlcude this region from analysis by setting coverage and entropy to NaN
         if _strand_skew_test( n_reads, n_forward, strand_bias_tol = strand_bias_tol):
             
-            features['read_depth'] = null_marker
+            features['n_reads'] = null_marker
             features['entropy'] = null_marker
             features['num_entropy_positions'] = 0
 
         else:
 
-            features['read_depth'] = n_reads # number of reads divided by approximate length of read
+            features['n_reads'] = n_reads # number of reads divided by approximate length of read
             #read_depth_dispersion  = var(read_depth)/mean(read_depth)
 
             entropies = list( map(float, record['entropies'].split(',')) )

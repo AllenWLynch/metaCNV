@@ -24,8 +24,8 @@ def get_parser():
 
     process_parser = subparsers.add_parser('preprocess-data')
     process_parser.add_argument('bamfile', type = file_exists)
-    process_parser.add_argument('--reference','-ref', type = file_exists)
-    process_parser.add_argument('--output', '-o', type = str)
+    process_parser.add_argument('--reference','-ref', type = file_exists, required=True)
+    process_parser.add_argument('--output', '-o', type = str, required=True)
     process_parser.add_argument('--window-size','-w', type = int, default = 200)
     process_parser.add_argument('--min-quality', '-Q', type = int, default = 20)
     process_parser.add_argument('--subcontig-size', '-sub', type = int, default = 25000)

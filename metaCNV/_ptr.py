@@ -15,13 +15,13 @@ def _make_ptr_matrix_row(regions,
                     ):
 
     # 1. calculate the median coverage a cross regions and 
-    median_coverage = regions['read_depth'].median()
+    median_coverage = regions['n_reads'].median()
 
     if not median_coverage > 1:
         raise InsufficientCoverageError(f"median_coverage = {median_coverage} is not greater than max_median_coverage_deviation = {max_median_coverage_deviation}")
 
     # 3. calculate the absolute log fold change in coverage
-    regions['abs_lfc_median'] = np.abs( np.log1p(regions._read_depth/median_coverage) )
+    regions['abs_lfc_median'] = np.abs( np.log1p(regions._n_reads/median_coverage) )
 
     # 4. filter out regions with a large deviation from the median coverage
     QC_pass_regions = regions[ regions.abs_lfc_median < max_median_coverage_deviation ]
@@ -30,7 +30,7 @@ def _make_ptr_matrix_row(regions,
     #    and calculate the normalized coverage within the window
     #    e.g. the average of coverage for windows without extreme values
     groups = QC_pass_regions.groupby(['sample','subcontig'])
-    subcontig_coverages = groups['read_depth'].sum()/groups['read_depth'].count()
+    subcontig_coverages = groups['n_reads'].sum()/groups['n_reads'].count()
 
     # 6. pivot the table so that each row is a sample, and each column is a subcontig
     subcontig_coverages.to_frame().reset_index().pivot(
