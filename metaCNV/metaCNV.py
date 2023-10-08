@@ -4,7 +4,7 @@ import metaCNV._cnv_model as model
 import numpy as np
 import pandas as pd
 from patsy import dmatrix
-from dataclasses import dataclass
+from metaCNV._fdr_testing import fdr_tests, get_summary
 
 
 import logging
@@ -89,15 +89,18 @@ def metaCNV(*,
         mutation_rates : str, 
         outfile : str,
         contigs : list[str],
+        # model parameters
+        coverage_weight = 0.75, 
+        entropy_df = 30,
+        max_fdr = 0.05,
+        use_coverage = True,
+        use_entropy = True,
+        # data parameters
         strand_bias_tol = 0.1,
         min_entropy_positions = 0.9,
         max_strains = 3,
         transition_matrix = None,
         alpha = 5e7,
-        use_coverage = True,
-        use_entropy = True,
-        coverage_weight = 0.75, 
-        entropy_df = 30,
         ):
     
     logger.info(f'Loading data ...')
@@ -129,11 +132,13 @@ def metaCNV(*,
     regions['ploidy'], regions['predicted_coverage'] = best_model.predict(_get_design_matrix(regions), lengths)
     
     logger.info(f'Applying FDR correction ...')
+    intervals = fdr_tests(regions, model = best_model, max_fdr = max_fdr)
 
     return {
         'model' : best_model, 
         'scores' : scores,
         'regions' : regions,
+        'intervals' : intervals
     }
 
 
