@@ -1,103 +1,140 @@
 
-from _load_data import load_regions_df
-import _cnv_model as model
-import os
+from metaCNV._load_data import format_data as _format_data
+import metaCNV._cnv_model as model
 import numpy as np
 import pandas as pd
+from patsy import dmatrix
+from dataclasses import dataclass
 
-def main(*,
-        metaCNV_file,
-        ptr_prefix,
-        mutation_rates, 
-        outfile,
-        strand_bias_tol = 0.1,
-        min_entropy_positions = 0.9,
-        max_strains = 3,
-        transition_matrix = None,
-        alpha = 1e5,
-        ):
-    
-    sample_name = os.path.basename(metaCNV_file)
 
-    with open(os.path.join(ptr_prefix, 'contigs.txt')) as f:
-        contigs = f.read().splitlines()
-    
-    mutation_rates = pd.read_csv(mutation_rates, sep = '\t')
+import logging
+logging.basicConfig(
+    level = logging.INFO, format = '%(name)s - %(levelname)s - %(message)s', 
+    datefmt = '%m/%d/%Y %I:%M:%S %p'
+)
+logger = logging.getLogger('metaCNV')
 
-    try:
-        log_ptr = pd.read_csv(
-                os.path.join(ptr_prefix, 'PTR.tsv'), 
-                sep = '\t'
-            )['PTR'].to_dict()[sample_name]
-    except KeyError:
-        raise KeyError(f'PTR for sample {sample_name} not found in {ptr_prefix}')
 
-    ori_distance = pd.read_csv(
-                    os.path.join(ptr_prefix, 'infered_ori_distance.tsv'), 
-                    sep = '\t'
+def _get_design_matrix(regions):
+
+    return dmatrix(
+                'coverage + n_reads + entropy + mutation_rate + ' \
+                'I(-ori_distance + 0.5) + standardize(np.log(gc_percent)) + 1', 
+                data = regions,
                 )
 
-    regions = load_regions_df(
-                    metaCNV_file, 
-                    contigs,
-                    strand_bias_tol=strand_bias_tol,
-                    min_entropy_positions=min_entropy_positions,
-                )
-    
-    regions = regions.set_index('subcontig').join(
-                    ori_distance, how = 'left'
-                ).reset_index()
-    
-    assert regions.X_ori.notnull().sum() > len(regions)/2, 'Too many subcontigs (>1/2) have no inferred distance to origin'
-    
-    regions['offset'] = regions.X_ori*log_ptr
-    regions['n_reads'] = np.rint(regions.n_reads)
 
-    window_size = int(regions.iloc[0].end - regions.iloc[0].start)
-    regions['coverage'] = np.rint(regions.n_reads * 100/window_size)
+def _load_transition_matrix(transition_matrix = None, alpha = 5e7):
 
-
-    if transition_matrix is None:
+    if not transition_matrix is None:
         t = pd.read_csv(
             transition_matrix, sep ='\t',
         )
         transition_matrix = model.TransitionMatrix(ploidies=t.columns, mat=t.values)
     else:
+        logger.info('No transition matrix provided, using sparse penalized matrix.')
         transition_matrix = model._sparse_transition_matrix(alpha = alpha)
 
-    regions = regions.sort_values('contig')
-    _, lengths = np.unique(regions.contig, return_counts=True)
+    return transition_matrix
 
 
-    bics = []; models = []
+
+def _select_model(*,
+        regions,
+        lengths,
+        max_strains,
+        transition_matrix, 
+        use_coverage = True,
+        use_entropy = True,
+        coverage_weight = 0.75,    
+        entropy_df = 30,
+    ):
+
+    X = _get_design_matrix(regions)
+
+    scores = []; models = []
 
     for n_strains in range(1, max_strains + 1):
         
-        n_strains_transition_matrix = transition_matrix._make_transition_matrix(n_strains)
+        logger.info(f'Trying {n_strains} strain model ...')
+        n_strains_transition_matrix = model._make_transition_matrix(transition_matrix, n_strains)
         start_prob = model._get_stationary_state(n_strains_transition_matrix.mat)
 
-        model = model.HMMModel.get_hmm_model(
-            regions,
+        hmm = model.HMMModel.get_hmm_model(
+            X,
             n_strains = n_strains,
             transmat=n_strains_transition_matrix.mat,
             ploidies=n_strains_transition_matrix.ploidies,
             startprob=start_prob,
-            training=True
+            training=True,
+            use_coverage=use_coverage,
+            use_entropy=use_entropy,
+            coverage_weight=coverage_weight,
+            entropy_df = entropy_df,
         )
 
-        model.fit(regions, lengths = lengths)
+        hmm.fit(X, lengths = lengths)
 
-        models.append(model)
-        bics.append(model.bic(regions, lengths = lengths))
+        models.append(hmm)
+        scores.append(hmm.bic(X, lengths = lengths))
+
+    best_model = models[np.argmin(scores)]
+    logger.info(f'Selected {n_strains} strain model with AIC = {scores[n_strains-1]}')
+
+    return best_model, scores
 
 
-    best_model = models[np.argmin(bics)]
-    n_strains = np.argmin(bics) + 1
+def metaCNV(*,
+        metaCNV_file : str,
+        mutation_rates : str, 
+        outfile : str,
+        contigs : list[str],
+        strand_bias_tol = 0.1,
+        min_entropy_positions = 0.9,
+        max_strains = 3,
+        transition_matrix = None,
+        alpha = 5e7,
+        use_coverage = True,
+        use_entropy = True,
+        coverage_weight = 0.75, 
+        entropy_df = 30,
+        ):
+    
+    logger.info(f'Loading data ...')
+    regions, lengths = _format_data(
+        metaCNV_file = metaCNV_file,
+        mutation_rates = mutation_rates, 
+        contigs = contigs,
+        strand_bias_tol = strand_bias_tol,
+        min_entropy_positions = min_entropy_positions,
+    )
 
-    regions['ploidy'] = best_model.predict(regions, lengths = lengths)*n_strains
+    transition_matrix = _load_transition_matrix(
+        transition_matrix = transition_matrix,
+        alpha = alpha,
+    )
 
-    regions[['contig', 'start', 'end', 'ploidy', 'n_reads','entropy','offset']]\
-            .to_csv(outfile, sep = '\t')
+    logger.info(f'Learning coverage parameters')
+    best_model, scores = _select_model(
+        regions = regions,
+        lengths = lengths,
+        transition_matrix = transition_matrix,
+        max_strains = max_strains,
+        use_coverage = use_coverage,
+        use_entropy = use_entropy,
+        coverage_weight = coverage_weight,
+        entropy_df = entropy_df,
+    )
+    
+    regions['ploidy'], regions['predicted_coverage'] = best_model.predict(_get_design_matrix(regions), lengths)
+    
+    logger.info(f'Applying FDR correction ...')
+
+    return {
+        'model' : best_model, 
+        'scores' : scores,
+        'regions' : regions,
+    }
 
 
     

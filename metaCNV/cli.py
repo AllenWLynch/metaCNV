@@ -3,7 +3,8 @@
 import argparse
 import sys
 from _preprocess import entropy, metaCNV_data
-from _ptr import learn_PTR_parameters
+from _gc_skew import main as gc_skew
+from _gc_skew import get_ori_distance
 import os
 
 def get_parser():
@@ -16,29 +17,39 @@ def get_parser():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest = 'command')
 
-    entropy_parser = subparsers.add_parser('entropy')
+    entropy_parser = subparsers.add_parser('pileup-entropy',
+                                           help = 'From a samtools pileup file, extract entropy and coverage features. \n'
+                                           'This command is used as part of the "extract-features" pipeline.')
     entropy_parser.add_argument('pileup', type = argparse.FileType('r'))
     entropy_parser.add_argument('--output', '-o', type = argparse.FileType('w'), default = sys.stdout)
     entropy_parser.set_defaults(func = entropy)
 
 
-    process_parser = subparsers.add_parser('preprocess-data')
+    process_parser = subparsers.add_parser('extract-features',
+                                           help = 'Extract features for CNV calling from a bam file.')
     process_parser.add_argument('bamfile', type = file_exists)
     process_parser.add_argument('--reference','-ref', type = file_exists, required=True)
+    process_parser.add_argument('--ori-distances', '-ori', type = file_exists, required=True)
     process_parser.add_argument('--output', '-o', type = str, required=True)
     process_parser.add_argument('--window-size','-w', type = int, default = 200)
-    process_parser.add_argument('--min-quality', '-Q', type = int, default = 20)
-    process_parser.add_argument('--subcontig-size', '-sub', type = int, default = 25000)
+    process_parser.add_argument('--min-quality', '-Q', type = int, default = 255)
     process_parser.set_defaults(func = metaCNV_data)
 
 
-    ptr_parser = subparsers.add_parser('learn-ptr')
-    ptr_parser.add_argument('samples', type = file_exists, nargs='+')
-    ptr_parser.add_argument('--contigs', '-c', type = str, nargs='+', required=True)
-    ptr_parser.add_argument('--outprefix', '-o', type = str, required=True)
-    ptr_parser.add_argument('--strand-bias-tol', '-sb', type = float, default = 0.1)
-    ptr_parser.add_argument('--max-median-coverage-deviation', '-cov', type = float, default = 8)
-    ptr_parser.set_defaults(func = learn_PTR_parameters)
+    gc_skew_parser = subparsers.add_parser('gc-skew',
+                                           help = 'Calculate GC skew from a fasta file.')
+    gc_skew_parser.add_argument('reference', type = file_exists)
+    gc_skew_parser.add_argument('--output', '-o', type = str, required=True)
+    gc_skew_parser.set_defaults(func = gc_skew)
+
+    ori_distance_parser = subparsers.add_parser('ori-distance',
+                                                help = 'Calculate distance from origin of replication from a GC skew file.')
+    ori_distance_parser.add_argument('gc_skew_file', type = file_exists)
+    ori_distance_parser.add_argument('--contig', '-c', type = str, required=True)
+    ori_distance_parser.add_argument('--window-size','-w', type = int, default = 200)
+    ori_distance_parser.add_argument('--reference','-ref', type = file_exists, required=True)
+    ori_distance_parser.add_argument('--output', '-o', type = str, default = sys.stdout)
+    ori_distance_parser.set_defaults(func = get_ori_distance)
 
     return parser
 

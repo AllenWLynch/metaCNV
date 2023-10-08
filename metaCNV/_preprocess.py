@@ -7,13 +7,6 @@ import tempfile
 import os
 
 
-_process_kw = dict(
-    text=True, 
-    bufsize=1000,
-    universal_newlines=True,
-)
-
-
 def _get_pileup_stats(chrom, pos, ref_base, num_reads, bases, baq):
 
     ref_base = ref_base.upper()
@@ -58,19 +51,24 @@ def entropy(*,pileup, output = sys.stdout):
 def metaCNV_data(*,
     bamfile : str,
     reference : str,
+    ori_distances : str,
     output : bytes,
     window_size = 200,
     min_quality = 20,
-    subcontig_size = 100000,
     ):
 
-    #genome_file = '/Users/allenwlynch/projects/metagenomes/mutation_analysis/realdata-test-1/genomic.chromsizes' #reference + '.fai'
+    _process_kw = dict(
+        text=True, 
+        bufsize=10000,
+        universal_newlines=True,
+        stderr=sys.stderr,
+    )
+
     index = reference + '.fai'
     if not os.path.exists(index):
         subprocess.run(['samtools', 'faidx', reference], **_process_kw)
 
     with tempfile.NamedTemporaryFile() as windows, \
-        tempfile.NamedTemporaryFile() as subcontigs_file, \
         tempfile.NamedTemporaryFile() as genome_file, \
         open(output,'wb') as output:
 
@@ -81,42 +79,38 @@ def metaCNV_data(*,
         windows_process = subprocess.Popen(
                         ['bedtools', 'makewindows', '-w', str(window_size),'-g', genome_file.name],
                         stdout=subprocess.PIPE,
-                        stderr=sys.stderr,
                         **_process_kw,
                     )
         
-        subprocess.Popen(
+        gc_process = subprocess.Popen(
             f'bedtools nuc -fi {reference} -bed - | cut -f 1-3,5 | tail -n +2',
             shell=True,
             stdin=windows_process.stdout,
+            stdout=subprocess.PIPE,
+            **_process_kw,
+        )
+
+        subprocess.Popen(
+            ['bedtools','map','-sorted','-a','-','-b', ori_distances,
+             '-c', '4', '-o', 'mean', '-null', '-1', '-g', genome_file.name],
+            stdin=gc_process.stdout,
             stdout=windows,
-            stderr=sys.stderr,
             **_process_kw,
         ).communicate()
-
-        # 1. make low-resolution "subcontigs"
-        subprocess.Popen(
-                        ['bedtools', 'makewindows', '-w', str(subcontig_size),'-g', genome_file.name],
-                        stdout=subcontigs_file,
-                        stderr=sys.stderr,
-                        **_process_kw,
-                    ).communicate()
 
         # 3. Process pileup
         pileup_process = subprocess.Popen([
             'samtools', 'mpileup', '--reference', reference, 
             '--no-BAQ', '--min-MQ', str(min_quality), bamfile],
             stdout=subprocess.PIPE,
-            stderr=sys.stderr,
             **_process_kw
             )
 
         scriptpath = os.path.join( os.path.dirname(__file__), 'cli.py' )
         entropy_process = subprocess.Popen(
-                ['python3', scriptpath, 'entropy','-'],
+                ['python3', scriptpath, 'pileup-entropy','-'],
                 stdin=pileup_process.stdout,
                 stdout= subprocess.PIPE,
-                stderr=sys.stderr,
                 **_process_kw
                 )
 
@@ -127,27 +121,13 @@ def metaCNV_data(*,
              '-c', '4,5,6,5', '-o', 'collapse,collapse,sum,count'],
             stdin= entropy_process.stdout,
             stdout= subprocess.PIPE,
-            stderr=sys.stderr,
-            **_process_kw,
-        )
-        
-        intersect_process = subprocess.Popen(
-            ['bedtools','intersect','-sorted', 
-            '-f', str(0.5),
-             '-wa', '-wb', '-g', genome_file.name,
-             '-a', '-', '-b', subcontigs_file.name,
-            ],
-            stdin=aggregate_process.stdout,
-            stdout= subprocess.PIPE,
-            stderr=sys.stderr,
             **_process_kw,
         )
                 
         gzip_process = subprocess.Popen(
             ['bgzip'],
-            stdin=intersect_process.stdout,
+            stdin=aggregate_process.stdout,
             stdout=output,
-            stderr=sys.stderr,
             **_process_kw,
         )
 

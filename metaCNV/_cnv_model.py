@@ -1,7 +1,7 @@
 import hmmlearn.base
 import numpy as np
-import nb_regression as nb
-import entropy_estimator as entropy_model
+import metaCNV._nb_regression as nb
+import metaCNV._entropy_model as entropy_model
 from dataclasses import dataclass
 from itertools import product
 
@@ -48,7 +48,7 @@ def _sparse_transition_matrix(alpha = 1e5):
 def _make_transition_matrix(base_transition_matrix, n_strains = 1):
 
     def norm_ploidy(x):
-        return round(sum(x)*2)/2
+        return round(sum(x)*4/n_strains)/4
 
     pi = _get_stationary_state(base_transition_matrix.mat)
     original_ploidy_idx_map = dict(zip(base_transition_matrix.ploidies, range(base_transition_matrix.n_states)))
@@ -94,18 +94,15 @@ class metaCNVFeatures:
     coverage: np.ndarray
     n_reads : np.ndarray
     entropy: np.ndarray
-    exposure: np.ndarray
+    mutation_rate : np.ndarray
     features: np.ndarray
 
-
-# PTR effect is *offset*!!!!!!!!!
-#dmatrix('n_reads + entropy + offset + gc_percent')
 
 def _split_features(X, design_info):
 
     colkeys = dict(zip(design_info.column_names, range(len(design_info.column_names))))
     
-    special_cols = ['coverage','n_reads','entropy','offset','mutation_rate']
+    special_cols = ['coverage','n_reads','entropy','mutation_rate']
     special = {
         col : X[:,colkeys[col]]
         for col in special_cols
@@ -122,25 +119,30 @@ def _split_features(X, design_info):
 def _loglikelihood_n_reads(
     ploidies,*,
     n_reads,
-    offset,
     features,
     beta,
     theta,
+    eps = 0.01,
     ):
 
     # N_samples x N_states
     _lambda = np.exp(
-        features @ beta[np.newaxis,:].T + offset[:,np.newaxis] + np.log(ploidies)[np.newaxis,:]
+        features @ beta[np.newaxis,:].T + np.log(ploidies)[np.newaxis,:]
     )
 
     # correct for ploidy = 0, or no exposure
-    _lambda = np.where(ploidies == 0, 0., _lambda)
+    _lambda = np.where(ploidies == 0, eps, _lambda)
     
-    return nb.model_log_likelihood(
+    ll = nb.model_log_likelihood(
         y = n_reads[:,None],
         _lambda = _lambda,
         theta = theta
     )
+
+    null_mask = n_reads < 0
+    ll[null_mask,:] = 0
+
+    return ll
 
 
 def _loglikelihood_entropy(
@@ -149,22 +151,33 @@ def _loglikelihood_entropy(
     coverage,
     mutation_rate,
     n_strains,
+    df = 30,
     ):
 
     loglikelihoods = []
+
+    n_deletion_states = sum(ploidies*n_strains < 1)
     
     for rho in ploidies:
         
-        loglikelihoods.append(
-            entropy_model.loglikelihood(
-                    ploidy = np.maximum( rho*n_strains, 1), #cannot have an absolute ploidy less than 1
-                    entropy = entropy,
-                    coverage = coverage,
-                    mutation_rate = mutation_rate
-                )[:,np.newaxis]
-        )
+        if rho*n_strains >= 1:
+            
+            loglikelihoods.append(
+                entropy_model.model_log_likelihood(
+                        ploidy = np.ones(len(entropy))*np.maximum( rho*n_strains, 1), #cannot have an absolute ploidy less than 1
+                        entropy = entropy,
+                        coverage = coverage,
+                        mutation_rate = mutation_rate,
+                        df = df,
+                    )[:,np.newaxis]
+                )
 
-    return np.vstack(loglikelihoods)
+    ll = np.hstack([np.repeat(loglikelihoods[0], n_deletion_states, axis = 1), *loglikelihoods])
+
+    null_mask = entropy < 0
+    ll[null_mask,:] = 0
+
+    return ll
 
 
 
@@ -191,11 +204,22 @@ class HMMModel(hmmlearn.base.BaseHMM):
             **kw,
         )
 
+        def enrich_single_copy_regions(n_reads):
+            median = np.median( n_reads[n_reads >= 0] )
+
+            return np.logical_and(
+                n_reads > 0,
+                np.abs( np.log(n_reads) - np.log(median) ) < 5
+            )
+        
+
         beta, theta = cls.fit_nb_component(
             X,
-            expected_ploidy = (X.n_reads > 0).astype(int),
+            expected_ploidy = np.ones(len(X)),
+            design_info=X.design_info,
             beta = None,
-            theta = None
+            theta = None,
+            filter_function = enrich_single_copy_regions,
         )
 
         model = cls(**init_kw)
@@ -209,23 +233,34 @@ class HMMModel(hmmlearn.base.BaseHMM):
     
 
     @staticmethod
-    def fit_nb_component(X, expected_ploidy, beta = None, theta = None):
+    def fit_nb_component(X, expected_ploidy, design_info,
+                         beta = None, theta = None,
+                         filter_function = None,
+                         ):
+        
+        cnv_data = _split_features(X, design_info)
+        use_mask = np.logical_and( cnv_data.n_reads >= 0, expected_ploidy > 0 )
 
-        cnv_data = _split_features(X)
-            
+        if not filter_function is None:
+            use_mask = np.logical_and(use_mask, filter_function(cnv_data.n_reads))
+        
         return nb.fit_NB_regression(
-            y = cnv_data.n_reads,
-            features = cnv_data.features,
-            exposure = expected_ploidy * np.exp(cnv_data.offset),
+            y = cnv_data.n_reads[use_mask],
+            features = cnv_data.features[use_mask],
+            exposure = expected_ploidy[use_mask],
             init_beta = beta,
             init_theta = theta
-        )
+        )[0]
 
 
     def __init__(self,*,
                  ploidies,
+                 coverage_weight = 0.5,
+                 entropy_df = 30,
                  n_strains = 1,
                  n_components=1,
+                 use_entropy = True,
+                 use_coverage = True,
                  startprob_prior=1.0, 
                  transmat_prior=1.0,
                  algorithm="viterbi", 
@@ -236,7 +271,6 @@ class HMMModel(hmmlearn.base.BaseHMM):
                  params='bdst',
                  init_params='bst',
                  implementation="log",
-                 design_info = None
                 ):
 
         super().__init__(n_components,
@@ -250,7 +284,10 @@ class HMMModel(hmmlearn.base.BaseHMM):
 
         self.n_strains = n_strains
         self.ploidies = ploidies
-        self.design_info = design_info
+        self.use_entropy = use_entropy
+        self.use_coverage = use_coverage
+        self.coverage_weight = coverage_weight
+        self.entropy_df = entropy_df
         
 
     def fit(self, X, lengths = None):
@@ -265,52 +302,88 @@ class HMMModel(hmmlearn.base.BaseHMM):
     def predict(self, X, lengths = None):
 
         _, states = self.decode(X, lengths=lengths)
-        #cnv_data = self.split_features(X)
-        return self.ploidies[states]
-        
-        '''return ploidies, predict(
-                exposure = ploidies,
-                features = features,
-                beta = self.beta
-            )'''
+        ploidies = self.ploidies[states]
 
+        cnv_data = self.split_features(X)
+        _lambda = np.exp(
+                cnv_data.features @ self.beta_.T + np.log(ploidies)
+            )
+
+        # correct for ploidy = 0, or no exposure
+        _lambda = np.where(ploidies == 0, 0., _lambda)
+
+        return ploidies, _lambda
+    
 
     def _compute_log_likelihood(self, X):
         
         cnv_data = self.split_features(X)
 
-        n_reads_ll = _loglikelihood_n_reads(
-            self.ploidies,
-            n_reads = cnv_data.n_reads,
-            offset = cnv_data.offset,
-            features = cnv_data.features,
-            beta = self.beta_,
-            theta = self.theta_,
+        ll = np.zeros(
+            (len(X), self.n_components)
         )
         
-        entropy_ll = _loglikelihood_entropy(
-            self.ploidies,
-            entropy = cnv_data.entropy,
-            coverage = cnv_data.coverage,
-            mutation_rate = cnv_data.mutation_rate,
-            n_strains = self.n_strains,
-        )
+        if self.use_coverage:
+            coverage_ll = _loglikelihood_n_reads(
+                self.ploidies,
+                n_reads = cnv_data.n_reads,
+                features = cnv_data.features,
+                beta = self.beta_,
+                theta = self.theta_,
+            )
+            coverage_ll = np.where(~np.isfinite(coverage_ll), 0, coverage_ll)
 
-        return n_reads_ll + entropy_ll
+            ll = ll + self.coverage_weight*coverage_ll
+        
+        if self.use_entropy:
+
+            entropy_ll = _loglikelihood_entropy(
+                self.ploidies,
+                entropy = cnv_data.entropy,
+                coverage = np.maximum(cnv_data.coverage,2.),
+                mutation_rate = cnv_data.mutation_rate,
+                n_strains = self.n_strains,
+                df = self.entropy_df,
+            )
+            entropy_ll = np.where(~np.isfinite(entropy_ll), 0, entropy_ll)
+            ll = ll + (1-self.coverage_weight)*entropy_ll
+
+        return ll
     
     
+    def _initialize_sufficient_statistics(self):
+        stats = super()._initialize_sufficient_statistics()
+        stats['X'] = []
+        stats['posteriors'] = []
+
+        return stats
+
+
+    def _accumulate_sufficient_statistics_log(
+            self, stats, X, lattice, posteriors, fwdlattice, bwdlattice):
+        super()._accumulate_sufficient_statistics_log(stats, X, lattice, posteriors, fwdlattice, bwdlattice)
+
+        stats['X'].append(X)
+        stats['posteriors'].append(posteriors)
+
+    
+
     def _do_mstep(self, stats):
         super()._do_mstep(stats)
 
         if 'b' or 'd' in self.params:
+
+            posteriors = np.vstack(stats['posteriors'])
+            X = np.vstack(stats['X'])
             
-            expected_ploidy = (stats['posteriors'] @ self.ploidies[:,None]).ravel()
+            expected_ploidy = (posteriors @ self.ploidies[:,None]).ravel()
 
             self.beta_, self.theta_ = self.fit_nb_component(
-                stats['X'],
+                X,
                 expected_ploidy,
+                self.design_info,
                 beta = self.beta_,
-                theta = self.theta_
+                theta = self.theta_,
             )
             
 
@@ -321,6 +394,6 @@ class HMMModel(hmmlearn.base.BaseHMM):
         return {
             's' : self.n_components - 1,
             't' : self.n_components * (self.n_components - 1),
-            'b' : 2,
+            'b' : 3,
             'd' : 1,
         }

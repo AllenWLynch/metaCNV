@@ -4,19 +4,20 @@ import os
 from statistics import mean
 from scipy.special import betainc, comb
 from scipy.special import beta as Beta
+import numpy as np
 
 DTYPES_DICT = {
         'contig' : 'category',
         'sample' : 'category',
-        'subcontig' : 'category',
-        'start' : 'int32',
-        'end' : 'int32',
+        'start' : 'uint32',
+        'end' : 'uint32',
+        'ori_distance' : 'float64',
         'n_reads' : 'float16',
         'num_entropy_positions' : 'uint16',
-        '_n_reads' : 'uint16',
-        '_n_forward' : 'uint16',
+        '_n_reads_unmasked' : 'float16',
+        '_n_forward_unmasked' : 'float16',
         'entropy' : 'float64',
-        'gc_percent' : 'float16',
+        'gc_percent' : 'float64',
     }
 
 
@@ -57,12 +58,7 @@ def load_regions_df(filename, contigs,
                  min_entropy_positions = 0.9,
                  ):
     
-    null_marker = float('nan')
-
-    record_cols = ['contig', 'start', 'end', 'gc_percent','entropies', 'read_depths',
-                          'n_forward_strand', 'num_windows',
-                          'subcontig_chrom','subcontig_start','subcontig_end', 'sample']
-    
+    null_marker = -1
 
     def mask_record(record):
 
@@ -71,8 +67,8 @@ def load_regions_df(filename, contigs,
             'contig' : record['contig'],
             'start' : record['start'],
             'end' : record['end'],
+            'ori_distance' : record['ori_distance'],
             'gc_percent' : record['gc_percent'],
-            'subcontig' : (record['subcontig_chrom'], record['subcontig_start'], record['subcontig_end'])
         }
 
         window_size = int(record['end']) - int(record['start'])
@@ -81,8 +77,8 @@ def load_regions_df(filename, contigs,
         n_reads = sum(read_depths)/100
 
         # store some raw data for debugging
-        features['_n_forward'] = n_forward
-        features['_n_reads'] = n_reads
+        features['_n_forward_unmasked'] = n_forward
+        features['_n_reads_unmasked'] = n_reads
 
         # check to see if this region contains a highly skewed strand bias,
         # if so, the basecalls and coverage are unreliable
@@ -112,7 +108,10 @@ def load_regions_df(filename, contigs,
 
         return features
     
-
+    record_cols = ['contig', 'start', 'end', 'gc_percent', 'ori_distance', 
+                   'entropies', 'read_depths', 'n_forward_strand', 
+                   'num_windows', 'sample']
+    
     features = []
     tb = tabix.open(filename)
 
@@ -128,18 +127,30 @@ def load_regions_df(filename, contigs,
     return df
 
 
-'''def load_samples(samples, contigs,
-                 strand_bias_tol = 0.1,
-                 min_entropy_positions = 0.9
-                 ):
+def format_data(*,
+        metaCNV_file,
+        mutation_rates, 
+        contigs,
+        strand_bias_tol = 0.1,
+        min_entropy_positions = 0.9,                 
+    ):
 
-    sample_features = []
-    for sample in samples:
-        sample_features.append(
-            load_contigs(sample, contigs,
-                         strand_bias_tol = strand_bias_tol,
-                         min_entropy_positions = min_entropy_positions
-                        )
-        )
+    regions = load_regions_df(
+                    metaCNV_file, 
+                    contigs,
+                    strand_bias_tol=strand_bias_tol,
+                    min_entropy_positions=min_entropy_positions,
+                )
 
-    return pd.concat(sample_features, ignore_index = True)'''
+    regions['n_reads'] = np.rint(regions.n_reads)
+
+    window_size = int(regions.iloc[0].end - regions.iloc[0].start)
+    regions['coverage'] = np.rint(regions.n_reads * 100/window_size)
+
+    mutation_rates = pd.read_csv(mutation_rates, sep = '\t', index_col=0)
+    regions = regions.merge(mutation_rates, on = ['contig','start','end'], how = 'left')
+
+    regions = regions.sort_values(['contig','start'])
+    _, lengths = np.unique(regions.contig, return_counts=True)
+
+    return regions, lengths
