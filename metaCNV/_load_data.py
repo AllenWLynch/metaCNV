@@ -150,6 +150,8 @@ def format_data(*,
     mutation_rates = pd.read_csv(mutation_rates, sep = '\t', index_col=0)
     regions = regions.merge(mutation_rates, on = ['contig','start','end'], how = 'left')
 
+    assert regions.mutation_rate.notnull().all(), 'Mutation rate not found for all regions'
+    
     regions = regions.sort_values(['contig','start'])
     _, lengths = np.unique(regions.contig, return_counts=True)
 

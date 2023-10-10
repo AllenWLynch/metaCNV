@@ -1,25 +1,11 @@
 from dataclasses import dataclass
 from scipy.stats import nbinom, norm
 import numpy as np
-from metaCNV.metaCNV import _get_design_matrix
-from metaCNV._cnv_model import _split_features
+from metaCNV._cnv_model import _split_features, _get_design_matrix
 from metaCNV._entropy_model import get_model as _get_entropy_model
 
 
-summarize_cols = ['coverage','n_reads','entropy','mutation_rate']
-
-def _get_interval_features(interval, mask_fn = lambda x: x):
-
-    interval = interval.copy()
-
-    use_mask = mask_fn(interval)
-    for col in summarize_cols:
-        interval[col] = np.array(interval[col])[use_mask]
-    
-    X = _get_design_matrix(interval)
-    cnvdata = _split_features(X, X.design_info)
-
-    return cnvdata
+summarize_cols = ['coverage','n_reads','entropy','mutation_rate','gc_percent', 'ori_distance']
 
 
 def _get_continuity_groups(
@@ -67,6 +53,24 @@ def _aggregate_groups(regions):
     })
 
 
+def _get_critical_value(null_lrt_samples, max_fdr = 0.05):
+
+    n_samples = len(null_lrt_samples)
+    cdf_value = int( n_samples * (1-max_fdr) )
+
+    null_lrt_samples = np.sort(null_lrt_samples)
+     
+    critical_value = null_lrt_samples[cdf_value]
+    
+    #if critical_value > 0:
+    test_fdr = max_fdr
+    #else:
+    #    critical_value = 0
+    #    test_fdr = (null_lrt_samples > 0).sum().item()/n_samples
+
+    return critical_value, test_fdr
+
+
 def _create_coverage_hypothesis_test(
         cnvdata,*,
         alternative_ploidy,
@@ -95,13 +99,9 @@ def _create_coverage_hypothesis_test(
 
     lrt_suffstat = lrt(y_tild)
 
-    null_distribution = norm( np.mean(lrt_suffstat), np.sqrt(np.var(lrt_suffstat)) )
-    critical_value = null_distribution.ppf(1 - max_fdr)
-    critical_value = max(critical_value, 0)
-
-    test_fdr = 1 - null_distribution.cdf(critical_value)
+    critical_value, test_fdr = _get_critical_value(lrt_suffstat, max_fdr = max_fdr)
     
-    return lambda cnvdata : lrt(cnvdata.n_reads, prior_odds=-critical_value), test_fdr, critical_value
+    return lambda cnvdata : lrt(cnvdata.n_reads, prior_odds=-critical_value).item(), critical_value, test_fdr
 
 
 
@@ -109,49 +109,66 @@ def _create_entropy_hypothesis_test(
         cnvdata,*,
         alternative_ploidy, 
         max_fdr = 0.05, 
-        n_samples = 10000,
         df = 30, 
         n_strains = 1,
 ):
     
+    n_samples = int( 100/max_fdr )
+    
     entropy_kw = dict(
-        coverage = cnvdata.coverage,
+        coverage = np.maximum(cnvdata.coverage,2.),
         mutation_rate = cnvdata.mutation_rate,
         df = df,
     )
     
-    null_model = _get_entropy_model(ploidy = n_strains, **entropy_kw)
-    alternative_model = _get_entropy_model(ploidy = alternative_ploidy*n_strains, **entropy_kw)
+    n_strains_vector = np.ones(len(cnvdata.entropy)) * n_strains
+
+    null_model = _get_entropy_model(ploidy = n_strains_vector, **entropy_kw)
+    alternative_model = _get_entropy_model(ploidy = alternative_ploidy*n_strains_vector, **entropy_kw)
 
     def lrt(entropy, prior_odds = 0):
-        return alternative_model.logpdf(entropy) - null_model.logpdf(entropy) + prior_odds
+        return alternative_model.logpdf(entropy).sum(axis = 0) \
+                    - null_model.logpdf(entropy).sum(axis = 0) + prior_odds
     
-    entropy_tild = null_model.rvs(size = (n_samples, cnvdata.entropy.size)).T
+    
+    entropy_tild = null_model.rvs(size = (cnvdata.entropy.size, n_samples))
     lrt_suffstat = lrt(entropy_tild)
 
-    null_distribution = norm( np.mean(lrt_suffstat), np.sqrt(np.var(lrt_suffstat)) )
-    critical_value = null_distribution.ppf(1 - max_fdr)
-    critical_value = max(critical_value, 0)
+    critical_value, test_fdr = _get_critical_value(lrt_suffstat, max_fdr = max_fdr)    
 
-    test_fdr = 1 - null_distribution.cdf(critical_value)
-
-    return lambda cnvdata : lrt(cnvdata.entropy, prior_odds=-critical_value), test_fdr, critical_value
+    return lambda cnvdata : lrt(cnvdata.entropy[:,np.newaxis], prior_odds=-critical_value).item(), critical_value, test_fdr
 
 
 
-def _apply_fdr_test(*,
-                    interval, 
+def _get_interval_features(interval, mask_fn = lambda x: x):
+
+    interval = interval.copy()
+
+    use_mask = mask_fn(interval)
+    for col in summarize_cols:
+        interval[col] = np.array(interval[col])[use_mask]
+    
+    X = _get_design_matrix(interval)
+    cnvdata = _split_features(X, X.design_info)
+
+    return cnvdata
+
+
+
+def _apply_fdr_test(interval,*,
                     mask_fn, 
                     test_fn,
                     max_fdr = 0.05,
-                    n_samples = 10000,
                     **test_kw,
                     ):
 
     cnvdata = _get_interval_features(interval, mask_fn= mask_fn)
+
+    if len(cnvdata) == 0:
+        return np.nan, np.nan
     
-    lr_test, fdr, critical_value = test_fn(cnvdata, 
-                    n_samples = n_samples,
+    lr_test, _, test_fdr = test_fn(
+                    cnvdata, 
                     max_fdr = max_fdr,
                     alternative_ploidy = interval.ploidy, 
                     **test_kw,  
@@ -159,7 +176,7 @@ def _apply_fdr_test(*,
     
     likelihood_ratio = lr_test(cnvdata)
 
-    return likelihood_ratio, fdr, critical_value
+    return likelihood_ratio, test_fdr
 
 
 
@@ -167,11 +184,12 @@ def fdr_tests(regions, model, max_fdr = 0.05):
 
     regions['continuity_group'] = _get_continuity_groups(regions)
     intervals = _aggregate_groups(regions)
+    intervals = intervals[intervals.ploidy != 1]
 
     def _disaggregate(x):
         return list(map(list, x))
 
-    intervals['coverage_test_statistic'], intervals['coverage_fdr'], intervals['coverage_critical_value'] \
+    intervals[['coverage_test_statistic', 'coverage_fdr']] \
                 = _disaggregate( 
                     intervals.apply(_apply_fdr_test, 
                                 axis = 1, 
@@ -183,9 +201,11 @@ def fdr_tests(regions, model, max_fdr = 0.05):
                     )
                 )
 
-    intervals['entropy_test_statistic'], intervals['entropy_fdr'], intervals['entropy_critical_value'] \
+    # entropy test only makes sense for ploidy > 1
+    duplications = intervals[intervals.ploidy > 1].copy()
+    duplications[['entropy_test_statistic', 'entropy_fdr']] \
                 = _disaggregate(
-                    intervals.apply(_apply_fdr_test,
+                    duplications.apply(_apply_fdr_test,
                                 axis = 1,
                                 df = model.entropy_df,
                                 n_strains = model.n_strains,
@@ -195,13 +215,11 @@ def fdr_tests(regions, model, max_fdr = 0.05):
                     )
                 )
 
+    intervals = intervals.join(duplications[['entropy_test_statistic','entropy_fdr']])
 
     intervals['coverage_supports_CNV'] = intervals.coverage_test_statistic > 0
     intervals['entropy_supports_CNV'] = intervals.entropy_test_statistic > 0
-    intervals['supports_CNV'] = intervals.coverage_supports_CNV & intervals.entropy_supports_CNV
+    intervals['supports_CNV'] = (intervals.ploidy > 1) & (intervals.coverage_supports_CNV & intervals.entropy_supports_CNV) \
+                                    | (intervals.ploidy < 1) & intervals.coverage_supports_CNV
 
     return intervals
-
-
-def get_summary(intervals):
-    pass

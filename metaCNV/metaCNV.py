@@ -1,11 +1,13 @@
 
 from metaCNV._load_data import format_data as _format_data
 import metaCNV._cnv_model as model
+from metaCNV._cnv_model import _get_design_matrix
+from metaCNV._fdr_testing import fdr_tests
 import numpy as np
 import pandas as pd
-from patsy import dmatrix
-from metaCNV._fdr_testing import fdr_tests, get_summary
-
+import sys
+import warnings
+warnings.simplefilter('ignore')
 
 import logging
 logging.basicConfig(
@@ -13,15 +15,6 @@ logging.basicConfig(
     datefmt = '%m/%d/%Y %I:%M:%S %p'
 )
 logger = logging.getLogger('metaCNV')
-
-
-def _get_design_matrix(regions):
-
-    return dmatrix(
-                'coverage + n_reads + entropy + mutation_rate + ' \
-                'I(-ori_distance + 0.5) + standardize(np.log(gc_percent)) + 1', 
-                data = regions,
-                )
 
 
 def _load_transition_matrix(transition_matrix = None, alpha = 5e7):
@@ -62,7 +55,7 @@ def _select_model(*,
 
         hmm = model.HMMModel.get_hmm_model(
             X,
-            n_strains = n_strains,
+            n_strains=n_strains,
             transmat=n_strains_transition_matrix.mat,
             ploidies=n_strains_transition_matrix.ploidies,
             startprob=start_prob,
@@ -70,28 +63,76 @@ def _select_model(*,
             use_coverage=use_coverage,
             use_entropy=use_entropy,
             coverage_weight=coverage_weight,
-            entropy_df = entropy_df,
+            entropy_df=entropy_df,
+            verbose = True,
         )
 
+        print(' Iteration  log_prob      log_liklihood_diff', file = sys.stderr)
         hmm.fit(X, lengths = lengths)
 
         models.append(hmm)
         scores.append(hmm.bic(X, lengths = lengths))
 
     best_model = models[np.argmin(scores)]
+    n_strains = np.argmin(scores) + 1
     logger.info(f'Selected {n_strains} strain model with AIC = {scores[n_strains-1]}')
 
     return best_model, scores
 
 
-def metaCNV(*,
+def _get_summary(intervals, model):
+    
+    summary = {
+        'log2_PTR' : np.log2( np.exp( model.beta_[1] ) ),
+        'log_gc_effect' : model.beta_[2],
+        'log_intercept_effect' : model.beta_[0],
+        'dispersion' : model.theta_,
+        'num_candidate_CNVs' : len(intervals),
+        'num_supported_CNVs' : intervals.supports_CNV.sum(),
+        'num_supported_CNVs_by_coverage' : intervals.coverage_supports_CNV.sum(),
+        'num_supported_CNVs_by_entropy' : intervals.entropy_supports_CNV.sum(),
+    }
+
+    return pd.Series(summary)
+
+
+def _write_results(outprefix,*,model, intervals, regions):
+    
+    intervals_df = intervals[[
+        'contig', 'start', 'end', 'ploidy', 
+        'coverage_test_statistic', 'entropy_test_statistic',
+        'coverage_supports_CNV', 'entropy_supports_CNV', 'supports_CNV'
+    ]]
+
+    intervals_df.columns = '#' + intervals_df.columns
+    intervals_df.to_csv(
+        f'{outprefix}.CNVs.bed', sep = '\t', index = False,
+    )
+
+    summary_df = _get_summary(intervals, model)
+    summary_df.to_csv(
+        f'{outprefix}.summary.tsv', sep = '\t', header=None,
+    )
+
+    regions_df = regions[[
+        'contig', 'start', 'end', 'ploidy', 'n_reads', 'entropy', 'predicted_n_reads',
+        'gc_percent','ori_distance','mutation_rate',
+    ]]
+    regions_df.columns = '#' + regions_df.columns
+    regions_df.to_csv(
+        f'{outprefix}.regions.bed', sep = '\t', index = False,
+    )
+
+
+
+def call_CNVs(*,
         metaCNV_file : str,
         mutation_rates : str, 
-        outfile : str,
+        outprefix : str,
         contigs : list[str],
         # model parameters
-        coverage_weight = 0.75, 
-        entropy_df = 30,
+        coverage_weight = 0.8, 
+        entropy_df = 20,
         max_fdr = 0.05,
         use_coverage = True,
         use_entropy = True,
@@ -118,7 +159,7 @@ def metaCNV(*,
     )
 
     logger.info(f'Learning coverage parameters')
-    best_model, scores = _select_model(
+    best_model, _ = _select_model(
         regions = regions,
         lengths = lengths,
         transition_matrix = transition_matrix,
@@ -129,17 +170,17 @@ def metaCNV(*,
         entropy_df = entropy_df,
     )
     
-    regions['ploidy'], regions['predicted_coverage'] = best_model.predict(_get_design_matrix(regions), lengths)
+    regions['ploidy'], regions['predicted_n_reads'] = best_model.predict(_get_design_matrix(regions), lengths)
     
     logger.info(f'Applying FDR correction ...')
     intervals = fdr_tests(regions, model = best_model, max_fdr = max_fdr)
 
-    return {
-        'model' : best_model, 
-        'scores' : scores,
-        'regions' : regions,
-        'intervals' : intervals
-    }
+    logger.info(f'Writing results ...')
+    _write_results(outprefix,
+                   model = best_model, 
+                   intervals = intervals, 
+                   regions = regions
+                )
 
-
+    logger.info(f'Done!')
     

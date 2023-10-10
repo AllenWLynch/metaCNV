@@ -134,7 +134,8 @@ def get_ori_distance(*,gc_skew_file, reference, contig, window_size, output):
         print(
             contig, start, end,
             shortest_distance_on_circle(origin, region),
-            sep='\t'
+            sep='\t',
+            file=output,
         )
 
 

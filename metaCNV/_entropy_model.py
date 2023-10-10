@@ -2,7 +2,7 @@ from scipy.special import gammaln
 import numpy as np
 from itertools import product
 from collections import Counter
-from scipy.stats import binom, norm, t
+from scipy.stats import binom, t
 import os
 from pandas import DataFrame, read_csv
 
@@ -165,33 +165,33 @@ def load_simulation_table():
                                 index = False,
                                 compression='gzip'
                                 )
-        
-        return simulation_table
     
-    else:
-        return read_csv(simulation_table_file)\
-            .set_index(['N','coverage','theta'])
+    return read_csv(simulation_table_file)\
+        .set_index(['N','coverage','theta'])
 
 
-
-SIMULATION_TABLE = load_simulation_table()
-
-def get_model(
+def get_model(*,
         ploidy,
         coverage,
         mutation_rate,
         df = 30,
     ):
 
-    absolute_ploidy = ploidy.astype(int)
-    coverage = np.rint(coverage).astype(int)
+    global SIMULATION_TABLE
+    try:
+        SIMULATION_TABLE
+    except NameError:
+        SIMULATION_TABLE = load_simulation_table()
+
+    absolute_ploidy = np.minimum(np.ceil(ploidy).astype(int), 16)
+    coverage = np.rint(np.minimum(coverage, 299)).astype(int)
     mutation_rate = ( 2**np.clip( np.rint(np.log2(mutation_rate)), -2, 4 ) )
 
     combined_idx = list(zip(*[absolute_ploidy, coverage, mutation_rate]))
 
     return t(df,
-            loc = SIMULATION_TABLE.loc[combined_idx].mu_entropy.values,
-            scale = np.sqrt(SIMULATION_TABLE.loc[combined_idx].var_entropy.values)
+            loc = SIMULATION_TABLE.loc[combined_idx].mu_entropy.values[:,np.newaxis],
+            scale = np.sqrt(SIMULATION_TABLE.loc[combined_idx].var_entropy.values[:,np.newaxis])
             )
 
 
@@ -203,4 +203,10 @@ def model_log_likelihood(*,
         df = 30,
     ):
 
-    return get_model(ploidy, coverage, mutation_rate, df = df).logpdf(entropy)
+    model = get_model(ploidy = ploidy, 
+                     coverage = coverage, 
+                     mutation_rate = mutation_rate, 
+                     df = df)
+    
+    logp = model.logpdf(entropy[:,np.newaxis])
+    return np.squeeze(logp, axis = 1)

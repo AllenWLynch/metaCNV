@@ -1,7 +1,8 @@
 
 from scipy.special import xlogy, gammaln
-from scipy.optimize import minimize
+from scipy.optimize import minimize, Bounds
 import numpy as np
+from scipy.special import digamma
 
 
 def model_log_likelihood(*,y, _lambda, theta):
@@ -14,15 +15,20 @@ def predict(*, exposure, features, beta):
             .ravel()
 
 
-def score(*, y, exposure, features, beta, theta):
+def score(*, y, exposure, features, beta, theta, weights):
     
-    return model_log_likelihood(
+    weighted_ll = model_log_likelihood(
         y = y, 
         _lambda = predict(
             exposure = exposure, 
             features = features, 
-            beta = beta), 
-        theta = theta).sum()
+            beta = beta
+            ), 
+        theta = theta
+        ).T @ weights
+    
+
+    return weighted_ll.item()
 
 
 
@@ -43,7 +49,7 @@ def _update_NB_weights(*, y, exposure, features, theta, weights,
         _lambda = np.exp(log_lambda)
         
         # negative binomial likelihood without regularizers
-        obj_val = ( y * log_lambda - (y + theta) * np.log(_lambda + theta) ) @ weights
+        obj_val = ( y * log_lambda - (y + theta) * np.log(_lambda + theta) ).T @ weights
         
         # jacobian
         error = theta/(_lambda + theta) * (y - _lambda) * weights
@@ -83,11 +89,44 @@ def _update_NB_weights(*, y, exposure, features, theta, weights,
     return res.x
 
 
+def _update_theta(y, exposure, features, beta, weights, 
+                     init_theta = None
+                 ):
+    
+    y = y[:,np.newaxis]
+    weights = weights[:,np.newaxis]  
+    log_lambda = ( np.log(exposure) + features @ beta.T )[:,np.newaxis]
+    _lambda = np.exp(log_lambda)
+
+    def _objective_jac(theta):
+        
+        # negative binomial likelihood with regularizers
+        obj_val = ( y * log_lambda - (y + theta) * np.log(_lambda + theta)\
+            + gammaln(y + theta) - gammaln(theta) + theta*np.log(theta) ).T @ weights
+
+        dL_dtheta = ( digamma(y + theta) - digamma(theta) - (y + theta)/(_lambda + theta)\
+                    - np.log(_lambda + theta) + (1 + np.log(theta)) ).T @ weights
+
+        return -obj_val, -dL_dtheta
+
+    
+    if init_theta is None:
+        init_theta = 1.
+    
+    res = minimize(
+            _objective_jac,
+            init_theta,
+            jac = True,
+            method = 'tnc',
+            bounds = Bounds(1e-30, 1e5, keep_feasible=True)
+         )
+
+    return res.x.item()
+
 
 def alpha_OLS(*,
-    y, exposure, features, beta, weights,
+    y, exposure, features, beta, weights, init_theta = None,
 ):
-
     _lambda = predict(exposure = exposure, features = features, beta = beta)
 
     squared_residuals = (np.square(y - _lambda) - _lambda)/_lambda
@@ -100,10 +139,15 @@ def alpha_OLS(*,
     return 1/alpha
 
 
+
 def fit_NB_regression(
     y, exposure, features, weights = None,
-    init_beta = None, init_theta = None,
-    em_iters = 100, loglike_tol = 1e-8,
+    init_beta = None, 
+    init_theta = None,
+    em_iters = 100, 
+    loglike_tol = 1e-8,
+    fit_theta = True,
+    fit_beta = True,
 ):
     
     if weights is None:
@@ -122,26 +166,36 @@ def fit_NB_regression(
         beta = np.array(init_beta)
 
     if init_theta is None:
-        theta = 10.
+        theta = 1.
     else:
         theta = init_theta
 
     scores = [score(**kwargs, beta = beta, theta = theta)]
     
-    for i in range(em_iters):
-        
+    if fit_beta and fit_theta:
+        for _ in range(em_iters):
+            
+            beta = _update_NB_weights(**kwargs, init_beta = beta, theta = theta )
+
+            theta = _update_theta(
+                **kwargs, beta = beta, init_theta = theta
+            )
+
+            curr_score = score(**kwargs, beta = beta, theta = theta)
+            if curr_score - scores[-1] < loglike_tol:
+                break
+
+            scores.append( curr_score )
+
+    elif fit_beta:
         beta = _update_NB_weights(**kwargs, init_beta = beta, theta = theta )
-        
-        theta = alpha_OLS(
-            **kwargs, beta = beta,
-        )
-        
-        curr_score = score(**kwargs, beta = beta, theta = theta)
-        
-        if curr_score - scores[-1] < loglike_tol:
-            break
+        scores.append( score(**kwargs, beta = beta, theta = theta) )
 
-        scores.append(curr_score)
+    elif fit_theta:
+        theta = _update_theta(**kwargs, beta = beta, init_theta = theta )
+        scores.append( score(**kwargs, beta = beta, theta = theta) )
+    else:
+        raise ValueError('Must fit at least one parameter.')
 
-
-    return (beta, theta.item()), scores
+    
+    return (beta, theta), scores

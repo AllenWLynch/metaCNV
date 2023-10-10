@@ -106,9 +106,8 @@ def metaCNV_data(*,
             **_process_kw
             )
 
-        scriptpath = os.path.join( os.path.dirname(__file__), 'cli.py' )
         entropy_process = subprocess.Popen(
-                ['python3', scriptpath, 'pileup-entropy','-'],
+                ['metaCNV', 'pileup-entropy','-'],
                 stdin=pileup_process.stdout,
                 stdout= subprocess.PIPE,
                 **_process_kw
