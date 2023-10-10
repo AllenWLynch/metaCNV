@@ -76,9 +76,9 @@ def get_parser():
 
     model_params = cnv_parser.add_argument_group('Model parameters')
     model_params.add_argument('--max-fdr', '-fdr', type = float, default = 0.05)
-    model_params.add_argument('--coverage-weight', '-cw', type = float, default = 0.8)
+    model_params.add_argument('--coverage-weight', '-cw', type = float, default = 0.75)
     model_params.add_argument('--entropy-df', '-df', type = int, default = 20)
-    model_params.add_argument('--max-strains', '-ms', type = int, default = 3)
+    model_params.add_argument('--max-strains', '-ms', type = int, default = 2)
 
     data_params = cnv_parser.add_argument_group('Data loading parameters')
     data_params.add_argument('--strand-bias-tol', '-sb', type = float, default = 0.1)

@@ -71,7 +71,9 @@ def _select_model(*,
         hmm.fit(X, lengths = lengths)
 
         models.append(hmm)
-        scores.append(hmm.bic(X, lengths = lengths))
+
+        strains_log_prior = np.log(0.95) if n_strains == 1 else np.log(0.05/(max_strains-1))
+        scores.append(hmm.bic(X, lengths = lengths) +  strains_log_prior)
 
     best_model = models[np.argmin(scores)]
     n_strains = np.argmin(scores) + 1
@@ -80,7 +82,7 @@ def _select_model(*,
     return best_model, scores
 
 
-def _get_summary(intervals, model):
+def _get_summary(intervals, model, scores):
     
     summary = {
         'log2_PTR' : np.log2( np.exp( model.beta_[1] ) ),
@@ -91,12 +93,15 @@ def _get_summary(intervals, model):
         'num_supported_CNVs' : intervals.supports_CNV.sum(),
         'num_supported_CNVs_by_coverage' : intervals.coverage_supports_CNV.sum(),
         'num_supported_CNVs_by_entropy' : intervals.entropy_supports_CNV.sum(),
+        **{
+            f'{n_strains}_strain_AIC' : score for n_strains, score in enumerate(scores, 1)
+        }
     }
 
     return pd.Series(summary)
 
 
-def _write_results(outprefix,*,model, intervals, regions):
+def _write_results(outprefix,*,model, intervals, regions, scores):
     
     intervals_df = intervals[[
         'contig', 'start', 'end', 'ploidy', 
@@ -109,7 +114,7 @@ def _write_results(outprefix,*,model, intervals, regions):
         f'{outprefix}.CNVs.bed', sep = '\t', index = False,
     )
 
-    summary_df = _get_summary(intervals, model)
+    summary_df = _get_summary(intervals, model, scores)
     summary_df.to_csv(
         f'{outprefix}.summary.tsv', sep = '\t', header=None,
     )
@@ -139,7 +144,7 @@ def call_CNVs(*,
         # data parameters
         strand_bias_tol = 0.1,
         min_entropy_positions = 0.9,
-        max_strains = 3,
+        max_strains = 2,
         transition_matrix = None,
         alpha = 5e7,
         ):
@@ -159,7 +164,7 @@ def call_CNVs(*,
     )
 
     logger.info(f'Learning coverage parameters')
-    best_model, _ = _select_model(
+    best_model, scores = _select_model(
         regions = regions,
         lengths = lengths,
         transition_matrix = transition_matrix,
@@ -179,7 +184,8 @@ def call_CNVs(*,
     _write_results(outprefix,
                    model = best_model, 
                    intervals = intervals, 
-                   regions = regions
+                   regions = regions,
+                   scores = scores,
                 )
 
     logger.info(f'Done!')
