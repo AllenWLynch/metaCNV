@@ -12,7 +12,7 @@ def _get_design_matrix(regions):
 
     return dmatrix(
                 'coverage + n_reads + entropy + mutation_rate + ' \
-                'I(-ori_distance + 0.5) + standardize(np.log(gc_percent)) + 1', 
+                'I(-ori_distance + 0.5) + standardize(np.log(gc_percent)) - 1', 
                 data = regions,
                 )
 
@@ -120,7 +120,10 @@ class metaCNVFeatures:
         return len(self.n_reads)
     
 
-def _split_features(X, design_info):
+def _split_features(X, design_info, include_intercept = True):
+
+    def left_pad(x):
+        return np.hstack([np.ones((len(x),1)), x])
 
     colkeys = dict(zip(design_info.column_names, range(len(design_info.column_names))))
     
@@ -131,6 +134,9 @@ def _split_features(X, design_info):
     }
     
     features = X[:, [colkeys[col] for col in design_info.column_names if not col in special_cols]]
+
+    if include_intercept:
+        features = left_pad(features)
 
     return metaCNVFeatures(
         **special,
@@ -221,7 +227,7 @@ class HMMModel(hmmlearn.base.BaseHMM):
             ploidies = ploidies,
             n_components = len(ploidies), 
             algorithm='map',
-            params = 'd' if training else '',
+            params = 'bd' if training else '',
             init_params = '',
             **kw,
         )
@@ -268,9 +274,9 @@ class HMMModel(hmmlearn.base.BaseHMM):
                          **kw,
                          ):
         
-        ploidies = np.maximum(ploidies, 0.01)
+        ploidies = np.maximum(ploidies*np.exp(beta[0]), 0.01)
         
-        cnv_data = _split_features(X, design_info)
+        cnv_data = _split_features(X, design_info, include_intercept=False)
         use_mask = cnv_data.n_reads >= 0 #np.logical_and( , expected_ploidy > 0 )
 
         if not filter_function is None:
@@ -288,17 +294,18 @@ class HMMModel(hmmlearn.base.BaseHMM):
         exposure = np.tile(ploidies, n_samples)
         weights = posterior_ploidies.ravel()
         
-        params, scores = nb.fit_NB_regression(
+        (new_coefs, theta), scores = nb.fit_NB_regression(
             y = n_reads,
             features = features,
             exposure = exposure,
             weights = weights,
-            init_beta = beta,
+            init_beta = beta[1:],
             init_theta = theta,
             **kw,
         )
         
-        return params
+        beta = np.array([beta[0], *new_coefs])
+        return beta, theta
 
 
     def __init__(self,*,
