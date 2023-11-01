@@ -85,7 +85,7 @@ def _select_model(*,
 def _get_summary(intervals, model, scores):
     
     summary = {
-        'log2_PTR' : np.log2( np.exp( model.beta_[1] ) ),
+        'log2_PTR' : np.log2( np.exp( np.abs(model.beta_[1]) ) ),
         'log_gc_effect' : model.beta_[2],
         'log_intercept_effect' : model.beta_[0],
         'dispersion' : model.theta_,

@@ -33,10 +33,13 @@ def _strand_skew_test(n_reads, n_forward, strand_bias_tol = 0.1):
     # p is the proportion of reads on the forward strand, which should be around 0.5
     # H0: p in [0.5 - tol, 0.5 + tol]
     # H1: p in H0^c
+    # assume prior on hypothesis classes: P(H0) = 0.9, so most positions are not strand biased
     # 1. Place a uniform prior over the space of p (p ~ Beta(1,1))
     # 2. Convolve the prior with the binomial likelihood, only on the interval p in [0, v]
-    # 3. Partition the space of F(x; v) into 3 regions: v=0.5 - tol, v=0.5 + tol, v=1
-    #    Where v=1 is p(x) under the beta-binomial model
+    #    to make the function F(x; v), the total probability of observing x for p in [0, v]
+    #    weighted by the prior.
+    # 3. Evaluate F(x; v) for three partitions: v=0.5 - tol, v=0.5 + tol, v=1
+    #    Where v=1 is p(x) under the beta-binomial model with uniform prior.
     # 4. Compute p_H0 = F(x; v=0.5+tol) - F(x; v=0.5-tol)
     beta_prior = (1,1)
     part1 = _incomplete_beta_binom(n_forward, n_reads, *beta_prior, 0.5 - strand_bias_tol)

@@ -168,6 +168,8 @@ def _loglikelihood_n_reads(
         theta = theta
     )
 
+    # I use -inf to mask bins which shouldn't be used for 
+    # likelihood calculation.
     null_mask = n_reads < 0
     ll[null_mask,:] = 0
 
@@ -189,11 +191,15 @@ def _loglikelihood_entropy(
     
     for rho in ploidies:
         
+        # entropy model does not percieve absolute ploidy < 1
+        # as being any different from ploidy = 1.
         if rho*n_strains >= 1:
             
+            absolute_ploidy = rho*n_strains
+
             loglikelihoods.append(
                 entropy_model.model_log_likelihood(
-                        ploidy = np.ones_like(entropy)*np.maximum( rho*n_strains, 1), #cannot have an absolute ploidy less than 1
+                        ploidy = np.ones_like(entropy)*absolute_ploidy, #cannot have an absolute ploidy less than 1
                         entropy = entropy,
                         coverage = coverage,
                         mutation_rate = mutation_rate,
@@ -203,6 +209,8 @@ def _loglikelihood_entropy(
 
     ll = np.hstack([np.repeat(loglikelihoods[0], n_deletion_states, axis = 1), *loglikelihoods])
 
+    # I use -inf to mask bins which shouldn't be used for 
+    # likelihood calculation.
     null_mask = entropy < 0
     ll[null_mask,:] = 0
 
@@ -236,6 +244,7 @@ class HMMModel(hmmlearn.base.BaseHMM):
         def enrich_single_copy_regions(n_reads):
             median = np.median( n_reads[n_reads >= 0] )
 
+            # choose regions with at least 1 read, and within 5-fold log absolute difference of median
             return np.logical_and(
                 n_reads > 0,
                 np.abs( np.log(n_reads) - np.log(median) ) < 5
