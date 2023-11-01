@@ -62,9 +62,9 @@ def _sparse_transition_matrix(alpha = 1e5):
 def _make_transition_matrix(base_transition_matrix, n_strains = 1):
 
     def norm_ploidy(x):
-        
+
         x = sum(x)
-        #return round(sum(x)*4/n_strains)/4
+    
         return base_transition_matrix.ploidies[
             np.abs( np.log2(x) - np.log2(base_transition_matrix.ploidies * n_strains) ).argmin()
         ]
@@ -75,6 +75,7 @@ def _make_transition_matrix(base_transition_matrix, n_strains = 1):
     hidden_states = list(product(base_transition_matrix.ploidies, repeat = n_strains))
 
     relative_ploidy = np.array(list(map(norm_ploidy, hidden_states)))
+    
     unique_ploidy_states = np.unique(relative_ploidy)
     num_states = len(unique_ploidy_states)
     new_ploidy_idx_map = dict(zip(unique_ploidy_states, range(num_states)))

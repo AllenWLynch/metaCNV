@@ -1,0 +1,34 @@
+
+
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metaCNV"
+version = "0.0.1"
+authors = [
+    {name = "Allen Lynch", email = "allenlynch@g.harvard.edu"},
+]
+description = "Calling CNVs from metagenome samples."
+readme = "README.rst"
+requires-python = ">=3.7"
+license = {text = "BSD-3-Clause"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    'pandas>=1.1.5',
+    'numpy>=1.19.5',
+    'scipy>=1.5.4',
+    'patsy>=0.5.3',
+    'hmmlearn>=0.3.0',
+    'tqdm',
+]
+
+[tool.setuptools]
+packages = ["metaCNV"]
+
+
+[project.scripts]
+metaCNV = "metaCNV.cli:main"
