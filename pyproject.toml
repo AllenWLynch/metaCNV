@@ -24,6 +24,7 @@ dependencies = [
     'patsy>=0.5.3',
     'hmmlearn>=0.3.0',
     'tqdm',
+    'pytabix>=0.1'
 ]
 
 [tool.setuptools]

@@ -154,6 +154,8 @@ def format_data(*,
     regions = regions.merge(mutation_rates, on = ['contig','start','end'], how = 'left')
 
     assert regions.mutation_rate.notnull().all(), 'Mutation rate not found for all regions'
+    assert (regions.ori_distance >= 0).all(), 'Ori distance must be provided for all regions. You cannot call CNVs without this information.\n'\
+                                              'Make sure ori distances were provided for the relatant contigs for the "extract-features" step.'
     
     regions = regions.sort_values(['contig','start'])
     _, lengths = np.unique(regions.contig, return_counts=True)
