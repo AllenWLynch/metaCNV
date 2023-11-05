@@ -109,11 +109,12 @@ Make sure to list all of the contigs associated with an organism in the `--conti
 This commmand saves three files:
 
 The `calls.bdorei.CNVs.bed` contains all candidate CNV calls in bed format, with additional columns:
-* #coverage_test_statistic: the test statistic for the coverage statistical test, positive means the region supports a CNV
-* #entropy_test_statistic: the test statistic for the entropy statistical test
-* #coverage_supports_CNV: whether the coverage test supports a CNV
-* #entropy_supports_CNV: whether the entropy test supports a CNV
-* #support_CNV: whether both tests support a CNV (if copy number gain) or if coverage supports a CNV (if copy number loss)
+
+- #coverage_test_statistic: the test statistic for the coverage statistical test, positive means the region supports a CNV
+- #entropy_test_statistic: the test statistic for the entropy statistical test
+- #coverage_supports_CNV: whether the coverage test supports a CNV
+- #entropy_supports_CNV: whether the entropy test supports a CNV
+- #support_CNV: whether both tests support a CNV (if copy number gain) or if coverage supports a CNV (if copy number loss)
 
 The `calls.bdorei.regions.bed` file contains summary statistics for each region of the genome.
 
